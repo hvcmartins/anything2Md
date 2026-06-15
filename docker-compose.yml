@@ -1,0 +1,13 @@
+services:
+  anything2md:
+    build: .
+    container_name: anything2md
+    restart: unless-stopped
+    ports:
+      - "7070:7070"
+    environment:
+      - SECRET_KEY=change_me_in_production
+      - MAX_FILE_SIZE_MB=50
+    # Unraid: map to your preferred appdata path
+    # volumes:
+    #   - /mnt/user/appdata/anything2md:/tmp
