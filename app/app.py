@@ -4,7 +4,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file, session
+from flask import Flask, jsonify, render_template, request, send_file
 from markitdown import MarkItDown
 
 app = Flask(__name__)
@@ -12,23 +12,13 @@ app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
 
 MAX_FILES = 20
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", 50))
-MAX_CONTENT_LENGTH = MAX_FILE_SIZE_MB * 1024 * 1024
 
-app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH * MAX_FILES
-
-# In-memory store: session_id -> {original_name: markdown_text}
-_store: dict[str, dict[str, str]] = {}
+app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE_MB * 1024 * 1024 * MAX_FILES
 
 md = MarkItDown()
 
-
-def get_session_store() -> dict[str, str]:
-    sid = session.get("sid")
-    if not sid or sid not in _store:
-        sid = str(uuid.uuid4())
-        session["sid"] = sid
-        _store[sid] = {}
-    return _store[sid]
+# Track output names per process to avoid collisions across concurrent requests
+_used_names: set[str] = set()
 
 
 @app.route("/")
@@ -45,17 +35,11 @@ def convert():
     if not file.filename:
         return jsonify({"error": "Empty filename"}), 400
 
-    store = get_session_store()
-    if len(store) >= MAX_FILES:
-        return jsonify({"error": f"Maximum of {MAX_FILES} files reached"}), 400
-
     original_name = Path(file.filename).name
-    file_bytes = file.read()
-
     suffix = Path(original_name).suffix or ".bin"
     tmp_path = Path("/tmp") / f"{uuid.uuid4()}{suffix}"
     try:
-        tmp_path.write_bytes(file_bytes)
+        tmp_path.write_bytes(file.read())
         result = md.convert(str(tmp_path))
         markdown = result.text_content
     except Exception as exc:
@@ -63,49 +47,32 @@ def convert():
     finally:
         tmp_path.unlink(missing_ok=True)
 
+    # Unique output name
     md_name = Path(original_name).stem + ".md"
-    # avoid collisions
     base, counter = md_name, 1
-    while md_name in store:
+    while md_name in _used_names:
         md_name = f"{Path(base).stem}_{counter}.md"
         counter += 1
+    _used_names.add(md_name)
 
-    store[md_name] = markdown
-    return jsonify({"name": md_name, "chars": len(markdown)})
-
-
-@app.route("/download/<path:filename>")
-def download_one(filename: str):
-    store = get_session_store()
-    if filename not in store:
-        return jsonify({"error": "File not found"}), 404
-    buf = io.BytesIO(store[filename].encode())
-    return send_file(buf, as_attachment=True, download_name=filename, mimetype="text/markdown")
+    # Return content directly — client stores it, no session needed
+    return jsonify({"name": md_name, "chars": len(markdown), "content": markdown})
 
 
 @app.route("/download-zip", methods=["POST"])
 def download_zip():
-    store = get_session_store()
-    names = request.json.get("files", list(store.keys())) if request.is_json else list(store.keys())
-    if not names:
+    payload = request.get_json(silent=True) or {}
+    files = payload.get("files", [])  # [{name, content}, ...]
+    if not files:
         return jsonify({"error": "Nothing to zip"}), 400
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name in names:
-            if name in store:
-                zf.writestr(name, store[name])
+        for f in files:
+            if f.get("name") and f.get("content") is not None:
+                zf.writestr(f["name"], f["content"])
     buf.seek(0)
     return send_file(buf, as_attachment=True, download_name="converted.zip", mimetype="application/zip")
-
-
-@app.route("/clear", methods=["POST"])
-def clear():
-    sid = session.get("sid")
-    if sid and sid in _store:
-        _store.pop(sid)
-    session.pop("sid", None)
-    return jsonify({"ok": True})
 
 
 @app.errorhandler(413)

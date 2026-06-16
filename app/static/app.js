@@ -2,13 +2,19 @@
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
-const fileList = document.getElementById('file-list');
+const fileListEl = document.getElementById('file-list');
 const itemsEl = document.getElementById('items');
 const fileCount = document.getElementById('file-count');
 const btnZip = document.getElementById('btn-download-zip');
 const btnClear = document.getElementById('btn-clear');
+const modal = document.getElementById('modal');
+const modalTitle = document.getElementById('modal-title');
+const modalContent = document.getElementById('modal-content');
+const btnCopy = document.getElementById('btn-copy');
+const btnModalDownload = document.getElementById('btn-modal-download');
+const btnCloseModal = document.getElementById('btn-close-modal');
 
-// name -> { state: 'pending'|'converting'|'done'|'error', mdName, chars, error }
+// name -> { state, mdName, chars, content, error }
 const files = new Map();
 
 const EXT_ICONS = {
@@ -19,23 +25,20 @@ const EXT_ICONS = {
   mp3: '🎵', wav: '🎵', mp4: '🎬',
 };
 
-function iconFor(filename) {
-  const ext = filename.split('.').pop().toLowerCase();
+function iconFor(name) {
+  const ext = name.split('.').pop().toLowerCase();
   return EXT_ICONS[ext] || '📁';
 }
 
-function fmtSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function updateHeader() {
   const done = [...files.values()].filter(f => f.state === 'done').length;
-  const total = files.size;
-  fileCount.textContent = `${total} / ${MAX_FILES} files`;
+  fileCount.textContent = `${files.size} / ${MAX_FILES} files`;
   btnZip.disabled = done === 0;
-  fileList.classList.toggle('hidden', total === 0);
+  fileListEl.classList.toggle('hidden', files.size === 0);
 }
 
 function renderItem(name, info) {
@@ -68,7 +71,15 @@ function renderItem(name, info) {
   } else if (info.state === 'done') {
     meta.innerHTML = `<span class="status-dot">●</span> ${escHtml(info.mdName)} · ${info.chars.toLocaleString()} chars`;
     actions.innerHTML = `
-      <button class="btn-icon" title="Download ${escHtml(info.mdName)}" onclick="downloadOne(${JSON.stringify(info.mdName)})">
+      <button class="btn-icon" title="Preview" onclick="openPreview(${JSON.stringify(name)})">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             width="16" height="16">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      </button>
+      <button class="btn-icon" title="Download ${escHtml(info.mdName)}" onclick="downloadOne(${JSON.stringify(name)})">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
              width="16" height="16">
@@ -83,23 +94,18 @@ function renderItem(name, info) {
   }
 }
 
-function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 async function uploadFile(file) {
   if (files.size >= MAX_FILES) {
     alert(`Maximum of ${MAX_FILES} files reached.`);
     return;
   }
   const name = file.name;
-  if (files.has(name)) return; // already queued
+  if (files.has(name)) return;
 
   files.set(name, { state: 'pending' });
   renderItem(name, files.get(name));
   updateHeader();
 
-  // small delay so UI paints before heavy work
   await new Promise(r => setTimeout(r, 30));
 
   files.set(name, { state: 'converting' });
@@ -112,7 +118,8 @@ async function uploadFile(file) {
     const res = await fetch('/convert', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Unknown error');
-    files.set(name, { state: 'done', mdName: data.name, chars: data.chars });
+    // content is stored client-side — no server session needed for download
+    files.set(name, { state: 'done', mdName: data.name, chars: data.chars, content: data.content });
   } catch (err) {
     files.set(name, { state: 'error', error: err.message });
   }
@@ -121,50 +128,51 @@ async function uploadFile(file) {
   updateHeader();
 }
 
-function addFiles(fileList) {
-  const arr = [...fileList].slice(0, MAX_FILES - files.size);
-  arr.forEach(f => uploadFile(f));
+function addFiles(list) {
+  [...list].slice(0, MAX_FILES - files.size).forEach(f => uploadFile(f));
 }
 
 // ── Drag & drop ──
-dropZone.addEventListener('dragover', e => {
-  e.preventDefault();
-  dropZone.classList.add('drag-over');
-});
-['dragleave', 'dragend'].forEach(ev =>
-  dropZone.addEventListener(ev, () => dropZone.classList.remove('drag-over'))
-);
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+['dragleave', 'dragend'].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.remove('drag-over')));
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('drag-over');
   if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
 });
-
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
-fileInput.addEventListener('change', () => {
-  if (fileInput.files.length) addFiles(fileInput.files);
-  fileInput.value = '';
-});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) addFiles(fileInput.files); fileInput.value = ''; });
 
-// ── Downloads ──
-function downloadOne(mdName) {
+// ── Download (client-side Blob — no server session needed) ──
+function blobDownload(content, filename) {
+  const blob = new Blob([content], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = `/download/${encodeURIComponent(mdName)}`;
-  a.download = mdName;
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadOne(name) {
+  const info = files.get(name);
+  if (!info || info.state !== 'done') return;
+  blobDownload(info.content, info.mdName);
 }
 
 btnZip.addEventListener('click', async () => {
-  const doneNames = [...files.values()]
+  const payload = [...files.values()]
     .filter(f => f.state === 'done')
-    .map(f => f.mdName);
-  if (!doneNames.length) return;
+    .map(f => ({ name: f.mdName, content: f.content }));
+  if (!payload.length) return;
 
   const res = await fetch('/download-zip', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: doneNames }),
+    body: JSON.stringify({ files: payload }),
   });
   if (!res.ok) { alert('Failed to create zip.'); return; }
   const blob = await res.blob();
@@ -172,15 +180,72 @@ btnZip.addEventListener('click', async () => {
   const a = document.createElement('a');
   a.href = url;
   a.download = 'converted.zip';
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 });
 
 // ── Clear ──
-btnClear.addEventListener('click', async () => {
+btnClear.addEventListener('click', () => {
   if (!confirm('Clear all files?')) return;
-  await fetch('/clear', { method: 'POST' });
   files.clear();
   itemsEl.innerHTML = '';
   updateHeader();
+});
+
+// ── Preview modal ──
+let _previewName = null;
+
+function openPreview(name) {
+  const info = files.get(name);
+  if (!info || info.state !== 'done') return;
+  _previewName = name;
+  modalTitle.textContent = info.mdName;
+  modalContent.textContent = info.content;
+  modal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  btnCopy.textContent = 'Copy';
+  btnCopy.prepend((() => {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none');
+    s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '2');
+    s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
+    s.setAttribute('width', '14'); s.setAttribute('height', '14');
+    s.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>';
+    return s;
+  })());
+}
+
+function closeModal() {
+  modal.classList.add('hidden');
+  document.body.style.overflow = '';
+  _previewName = null;
+}
+
+btnCloseModal.addEventListener('click', closeModal);
+modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+btnCopy.addEventListener('click', async () => {
+  const text = modalContent.textContent;
+  await navigator.clipboard.writeText(text);
+  btnCopy.innerHTML = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+         width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg>
+    Copied!`;
+  setTimeout(() => {
+    btnCopy.innerHTML = `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+           width="14" height="14">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>Copy`;
+  }, 2000);
+});
+
+btnModalDownload.addEventListener('click', () => {
+  if (_previewName) downloadOne(_previewName);
 });
