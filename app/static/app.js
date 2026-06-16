@@ -14,7 +14,7 @@ const btnCopy = document.getElementById('btn-copy');
 const btnModalDownload = document.getElementById('btn-modal-download');
 const btnCloseModal = document.getElementById('btn-close-modal');
 
-// name -> { state, mdName, chars, content, error }
+// original-filename -> { state, mdName, chars, content, error }
 const files = new Map();
 
 const EXT_ICONS = {
@@ -31,7 +31,11 @@ function iconFor(name) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function updateHeader() {
@@ -47,6 +51,7 @@ function renderItem(name, info) {
     li = document.createElement('li');
     li.className = 'item';
     li.id = `item-${CSS.escape(name)}`;
+    li.dataset.name = name;
     li.innerHTML = `
       <div class="item-icon">${iconFor(name)}</div>
       <div class="item-info">
@@ -70,8 +75,9 @@ function renderItem(name, info) {
     actions.innerHTML = '';
   } else if (info.state === 'done') {
     meta.innerHTML = `<span class="status-dot">●</span> ${escHtml(info.mdName)} · ${info.chars.toLocaleString()} chars`;
+    // Use data-action for event delegation — no inline onclick needed
     actions.innerHTML = `
-      <button class="btn-icon" title="Preview" onclick="openPreview(${JSON.stringify(name)})">
+      <button class="btn-icon" title="Preview" data-action="preview" data-name="${escHtml(name)}">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
              width="16" height="16">
@@ -79,7 +85,7 @@ function renderItem(name, info) {
           <circle cx="12" cy="12" r="3"/>
         </svg>
       </button>
-      <button class="btn-icon" title="Download ${escHtml(info.mdName)}" onclick="downloadOne(${JSON.stringify(name)})">
+      <button class="btn-icon" title="Download ${escHtml(info.mdName)}" data-action="download" data-name="${escHtml(name)}">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
              width="16" height="16">
@@ -94,6 +100,17 @@ function renderItem(name, info) {
   }
 }
 
+// Single delegated listener — handles all preview/download button clicks
+itemsEl.addEventListener('click', e => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const name = btn.dataset.name;
+  const action = btn.dataset.action;
+  if (action === 'preview') openPreview(name);
+  else if (action === 'download') downloadOne(name);
+});
+
+// ── Upload ──
 async function uploadFile(file) {
   if (files.size >= MAX_FILES) {
     alert(`Maximum of ${MAX_FILES} files reached.`);
@@ -118,7 +135,6 @@ async function uploadFile(file) {
     const res = await fetch('/convert', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Unknown error');
-    // content is stored client-side — no server session needed for download
     files.set(name, { state: 'done', mdName: data.name, chars: data.chars, content: data.content });
   } catch (err) {
     files.set(name, { state: 'error', error: err.message });
@@ -134,7 +150,9 @@ function addFiles(list) {
 
 // ── Drag & drop ──
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-['dragleave', 'dragend'].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.remove('drag-over')));
+['dragleave', 'dragend'].forEach(ev =>
+  dropZone.addEventListener(ev, () => dropZone.classList.remove('drag-over'))
+);
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('drag-over');
@@ -142,9 +160,12 @@ dropZone.addEventListener('drop', e => {
 });
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
-fileInput.addEventListener('change', () => { if (fileInput.files.length) addFiles(fileInput.files); fileInput.value = ''; });
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) addFiles(fileInput.files);
+  fileInput.value = '';
+});
 
-// ── Download (client-side Blob — no server session needed) ──
+// ── Download (client-side Blob) ──
 function blobDownload(content, filename) {
   const blob = new Blob([content], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
@@ -205,16 +226,7 @@ function openPreview(name) {
   modalContent.textContent = info.content;
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
-  btnCopy.textContent = 'Copy';
-  btnCopy.prepend((() => {
-    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none');
-    s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '2');
-    s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
-    s.setAttribute('width', '14'); s.setAttribute('height', '14');
-    s.innerHTML = '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>';
-    return s;
-  })());
+  setCopyIdle();
 }
 
 function closeModal() {
@@ -225,25 +237,26 @@ function closeModal() {
 
 btnCloseModal.addEventListener('click', closeModal);
 modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal(); });
+
+function setCopyIdle() {
+  btnCopy.innerHTML = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         width="14" height="14">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>Copy`;
+}
 
 btnCopy.addEventListener('click', async () => {
-  const text = modalContent.textContent;
-  await navigator.clipboard.writeText(text);
+  await navigator.clipboard.writeText(modalContent.textContent);
   btnCopy.innerHTML = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
          stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
          width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg>
     Copied!`;
-  setTimeout(() => {
-    btnCopy.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-           width="14" height="14">
-        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-      </svg>Copy`;
-  }, 2000);
+  setTimeout(setCopyIdle, 2000);
 });
 
 btnModalDownload.addEventListener('click', () => {
