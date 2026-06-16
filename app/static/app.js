@@ -85,6 +85,14 @@ function renderItem(name, info) {
           <circle cx="12" cy="12" r="3"/>
         </svg>
       </button>
+      <button class="btn-icon" title="Copy markdown" data-action="copy" data-name="${escHtml(name)}">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             width="16" height="16">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      </button>
       <button class="btn-icon" title="Download ${escHtml(info.mdName)}" data-action="download" data-name="${escHtml(name)}">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -100,14 +108,27 @@ function renderItem(name, info) {
   }
 }
 
-// Single delegated listener — handles all preview/download button clicks
-itemsEl.addEventListener('click', e => {
+// Single delegated listener — handles preview / copy / download buttons
+itemsEl.addEventListener('click', async e => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const name = btn.dataset.name;
   const action = btn.dataset.action;
-  if (action === 'preview') openPreview(name);
-  else if (action === 'download') downloadOne(name);
+  if (action === 'preview') {
+    openPreview(name);
+  } else if (action === 'download') {
+    downloadOne(name);
+  } else if (action === 'copy') {
+    const info = files.get(name);
+    if (!info || info.state !== 'done') return;
+    await copyText(info.content);
+    // Brief checkmark feedback on the button
+    const orig = btn.innerHTML;
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      width="16" height="16"><polyline points="20 6 9 17 4 12"/></svg>`;
+    setTimeout(() => { btn.innerHTML = orig; }, 2000);
+  }
 });
 
 // ── Upload ──
@@ -164,6 +185,23 @@ fileInput.addEventListener('change', () => {
   if (fileInput.files.length) addFiles(fileInput.files);
   fileInput.value = '';
 });
+
+// ── Clipboard (works on HTTP, not just HTTPS) ──
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+  } else {
+    // Fallback for HTTP (local network / Unraid)
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
 
 // ── Download (client-side Blob) ──
 function blobDownload(content, filename) {
@@ -250,7 +288,7 @@ function setCopyIdle() {
 }
 
 btnCopy.addEventListener('click', async () => {
-  await navigator.clipboard.writeText(modalContent.textContent);
+  await copyText(modalContent.textContent);
   btnCopy.innerHTML = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
          stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
